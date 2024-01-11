@@ -7,21 +7,29 @@ import random
 from datetime import datetime, date, timedelta
 
 from loguru import logger
+from tqdm import tqdm
 
 from paper_reader.utils import format_date
 from paper_reader.paper_fetch import PaperInterface
 
+from paper_reader.shared import em_model
+
 class PaperData:
-    def __init__(self, cache_path="./cache_data") -> None:
+    def __init__(self, use_llm=True, cache_path="./cache_data") -> None:
         
         self.cache_path = cache_path
         self._cache = {}  #缓存的数据
+
+        self.use_llm = use_llm
+        if self.use_llm:
+            from paper_reader.models.llm import LocalLLM
+            self.llm = LocalLLM()
     
     def __read_cache_file(self, fname:str):
         """ 读取缓存的文件数据
         """
         res = []
-        with open(fname, "r") as fr:
+        with open(fname, "r", encoding="utf-8") as fr:
             for line in fr:
                 line = line.strip()
                 if line:
@@ -95,6 +103,34 @@ class PaperData:
                     candidate.extend([_temp for _temp in _d if not self.judge_exists(candidate, _temp)])
         
         return candidate
+
+    def __translate_title(self, title: str):
+        """ 使用大模型将标题进行翻译，如果未部署大模型，则原样返回
+        """
+        if self.use_llm:
+            prompt = f"你是一个英文-中文翻译专家，请将以下英文文本翻译成中文：{title}"
+            resp = ""
+            for _t in self.llm.generate(prompt, stream=True):
+                resp += _t
+            
+            logger.debug(f"origin text = [{title}], result = [{resp.strip()}]")
+            return resp.strip()
+        else:
+            return title
+    
+    def __summary_abstract(self, abstract: str):
+        """ 使用大模型对摘要内容进行总结，如果未部署大模型，则原样返回
+        """
+        if self.use_llm:
+            prompt = f"将以下文本用中文进行简洁有效的总结：{abstract}"
+            resp = ""
+            for _t in self.llm.generate(prompt, stream=True):
+                resp += _t
+            
+            logger.debug(f"origin text = [{abstract}], result = [{resp.strip()}]")
+            return resp.strip()
+        else:
+            return abstract
      
     def load_paper_data(self, 
                         start_date: datetime, 
@@ -120,8 +156,9 @@ class PaperData:
         paper_data_call = PaperInterface()
         for cate_name in categories:
             for _f_date_format, _date in fetch_date_dict.items():
-                # 判断当前缓存中是否存在指定类别指定日期的数据
-                if _f_date_format in self._cache[cate_name]:
+                # 判断当前缓存中是否存在指定类别指定日期的数据，且存在的数据量必须大于0
+                # 加>0的判断为：避免因为arxiv 的更新问题导致获取为空，从而一直跳过的情况
+                if _f_date_format in self._cache[cate_name] and len(self._cache[cate_name][_f_date_format]) > 0:
                     continue
                 
                 if _date >= end_date or _date < start_date:
@@ -129,14 +166,17 @@ class PaperData:
                 
                 paper_result = paper_data_call.get_specify_data_paper(_date, cate_name, max_results=200)
                 trans_paper_result = []
-                for paper in paper_result:
+                for paper in tqdm(paper_result):
                     _p = {
                         "title": paper.title,
                         "author": ', '.join(author.name for author in paper.authors),
                         "abstract": paper.summary,
                         "published": paper.published.strftime("%Y-%m-%d"),
                         "categories": paper.categories,
-                        "links": paper.entry_id
+                        "links": paper.entry_id,
+                        "title_embedding": em_model.embedding_sentence(paper.title),
+                        "title_translate": self.__translate_title(paper.title),
+                        "abstract_summary": self.__summary_abstract(paper.summary) 
                     }
                     trans_paper_result.append(_p)
                 self.write_cache_data(cate_name, _f_date_format, trans_paper_result)
@@ -144,9 +184,7 @@ class PaperData:
                 time.sleep(random.randint(5, 10))
         # 刷新已缓存的论文数据
         self.refresh_cache_data(categories)
-                
-                
-"""    
-paper_d = PaperData()
-paper_d.load_paper_data("2024-01-04"["cs.AI"])
-"""
+
+
+"""如果没有在本地部署大模型，则use_llm=False"""
+paper_data_obj = PaperData(use_llm=True)            

@@ -1,5 +1,3 @@
-from paper_reader.load_data import PaperData
-from paper_reader.paper_search import PaperRank
+from paper_reader.models.embedding import EmbeddingModel
 
-paper_data = PaperData()
-paper_rank = PaperRank()
+em_model = EmbeddingModel("./bge-large-en-v1.5")
